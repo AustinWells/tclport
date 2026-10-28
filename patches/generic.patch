@@ -1,3 +1,17 @@
+diff --git a/compat/zlib/contrib/minizip/tinydir.h b/compat/zlib/contrib/minizip/tinydir.h
+index b8133ac..ad793ff 100644
+--- a/compat/zlib/contrib/minizip/tinydir.h
++++ b/compat/zlib/contrib/minizip/tinydir.h
+@@ -41,6 +41,9 @@ extern "C" {
+ #define _UNICODE
+ #endif
+ 
++#if defined(__MVS__)
++#define _XOPEN_SOURCE 600
++#endif
+ #include <errno.h>
+ #include <stdlib.h>
+ #include <string.h>
 diff --git a/generic/regc_locale.c b/generic/regc_locale.c
 index 9dfea3f..3616296 100644
 --- a/generic/regc_locale.c
@@ -41,7 +55,7 @@ index 949f397..d616c98 100644
  	dovec(v, cv, lp, rp);
  	return;
 diff --git a/generic/tclIO.c b/generic/tclIO.c
-index b22019c..4ee66b8 100644
+index c884934..0377e44 100644
 --- a/generic/tclIO.c
 +++ b/generic/tclIO.c
 @@ -15,6 +15,7 @@
@@ -52,11 +66,154 @@ index b22019c..4ee66b8 100644
  
  /*
   * For each channel handler registered in a call to Tcl_CreateChannelHandler,
+diff --git a/generic/tclInt.h b/generic/tclInt.h
+index f088545..692dfe9 100644
+--- a/generic/tclInt.h
++++ b/generic/tclInt.h
+@@ -71,6 +71,7 @@
+ #include <string.h>
+ #include <locale.h>
+ 
++#include <strings.h>
+ /*
+  * Ensure WORDS_BIGENDIAN is defined correctly:
+  * Needs to happen here in addition to configure to work with fat compiles on
+diff --git a/generic/tclParse.c b/generic/tclParse.c
+index 88368cc..351ec60 100644
+--- a/generic/tclParse.c
++++ b/generic/tclParse.c
+@@ -17,6 +17,13 @@
+ #include "tclParse.h"
+ #include <assert.h>
+ 
++/*
++ * On z/OS (EBCDIC), the character table needs to be initialized at runtime
++ */
++#ifdef __MVS__
++#define TCL_CHAR_TABLE_RUNTIME_INIT 1
++#endif
++
+ /*
+  * The following table provides parsing information about each possible 8-bit
+  * character. The table is designed to be referenced with unsigned characters.
+@@ -39,6 +46,9 @@
+  * TYPE_BRACE -		Character is a curly brace (either left or right).
+  */
+ 
++#ifdef TCL_CHAR_TABLE_RUNTIME_INIT
++unsigned char tclCharTypeTable[256];
++#else
+ const unsigned char tclCharTypeTable[] = {
+ 
+     /*
+@@ -115,6 +125,7 @@ const unsigned char tclCharTypeTable[] = {
+     TYPE_NORMAL,      TYPE_NORMAL,      TYPE_NORMAL,      TYPE_NORMAL,
+     TYPE_NORMAL,      TYPE_NORMAL,      TYPE_NORMAL,      TYPE_NORMAL,
+ };
++#endif /* !TCL_CHAR_TABLE_RUNTIME_INIT */
+ 
+ /*
+  * Prototypes for local functions defined in this file:
+@@ -131,6 +142,11 @@ static Tcl_Size		ParseAllWhiteSpace(const char *src, Tcl_Size numBytes,
+ 			    int *incompletePtr);
+ static int		ParseHex(const char *src, Tcl_Size numBytes,
+ 			    int *resultPtr);
++
++#ifdef TCL_CHAR_TABLE_RUNTIME_INIT
++static void		InitCharTypeTable(void);
++static int charTableInitialized = 0;
++#endif
+ 
+ /*
+  *----------------------------------------------------------------------
+@@ -1060,6 +1076,13 @@ ParseTokens(
+     int noSubstBS = !(flags & TCL_SUBST_BACKSLASHES);
+     Tcl_Token *tokenPtr;
+ 
++#ifdef TCL_CHAR_TABLE_RUNTIME_INIT
++    if (!charTableInitialized) {
++        InitCharTypeTable();
++        charTableInitialized = 1;
++    }
++#endif
++
+     /*
+      * Each iteration through the following loop adds one token of type
+      * TCL_TOKEN_TEXT, TCL_TOKEN_BS, TCL_TOKEN_COMMAND, or TCL_TOKEN_VARIABLE
+@@ -2491,6 +2514,55 @@ TclObjCommandComplete(
+ 
+     return CommandComplete(script, length);
+ }
++
++#ifdef TCL_CHAR_TABLE_RUNTIME_INIT
++/*
++ *----------------------------------------------------------------------
++ *
++ * InitCharTypeTable --
++ *
++ *	Initialize the character type table for EBCDIC systems.
++ *	This maps actual character values to their types.
++ *
++ * Results:
++ *	None.
++ *
++ * Side effects:
++ *	Initializes the tclCharTypeTable array.
++ *
++ *----------------------------------------------------------------------
++ */
++
++static void
++InitCharTypeTable(void)
++{
++    int i;
++
++    /* Initialize all to TYPE_NORMAL */
++    for (i = 0; i < 256; i++) {
++        tclCharTypeTable[i] = TYPE_NORMAL;
++    }
++
++    /* Set special characters based on actual character encoding */
++    tclCharTypeTable[(unsigned char)'\0'] = TYPE_SUBS;        /* null */
++    tclCharTypeTable[(unsigned char)'\t'] = TYPE_SPACE;       /* tab */
++    tclCharTypeTable[(unsigned char)'\n'] = TYPE_COMMAND_END; /* newline */
++    tclCharTypeTable[(unsigned char)'\v'] = TYPE_SPACE;       /* vertical tab */
++    tclCharTypeTable[(unsigned char)'\f'] = TYPE_SPACE;       /* form feed */
++    tclCharTypeTable[(unsigned char)'\r'] = TYPE_SPACE;       /* carriage return */
++    tclCharTypeTable[(unsigned char)' '] = TYPE_SPACE;        /* space */
++    tclCharTypeTable[(unsigned char)'"'] = TYPE_QUOTE;        /* double quote */
++    tclCharTypeTable[(unsigned char)'$'] = TYPE_SUBS;         /* dollar */
++    tclCharTypeTable[(unsigned char)'('] = TYPE_OPEN_PAREN;   /* open paren */
++    tclCharTypeTable[(unsigned char)')'] = TYPE_CLOSE_PAREN;  /* close paren */
++    tclCharTypeTable[(unsigned char)';'] = TYPE_COMMAND_END;  /* semicolon */
++    tclCharTypeTable[(unsigned char)'['] = TYPE_SUBS;         /* open bracket */
++    tclCharTypeTable[(unsigned char)'\\'] = TYPE_SUBS;       /* backslash */
++    tclCharTypeTable[(unsigned char)']'] = TYPE_CLOSE_BRACK;  /* close bracket */
++    tclCharTypeTable[(unsigned char)'{'] = TYPE_BRACE;        /* open brace */
++    tclCharTypeTable[(unsigned char)'}'] = TYPE_BRACE;        /* close brace */
++}
++#endif /* TCL_CHAR_TABLE_RUNTIME_INIT */
+ 
+ /*
+  * Local Variables:
+diff --git a/generic/tclParse.h b/generic/tclParse.h
+index 1381b30..fc43ff1 100644
+--- a/generic/tclParse.h
++++ b/generic/tclParse.h
+@@ -19,4 +19,8 @@ enum ParseTypeFlags {
+ 
+ #define CHAR_TYPE(c) tclCharTypeTable[(unsigned char)(c)]
+ 
++#ifdef __MVS__
++MODULE_SCOPE unsigned char tclCharTypeTable[];
++#else
+ MODULE_SCOPE const unsigned char tclCharTypeTable[];
++#endif
 diff --git a/generic/tclZipfs.c b/generic/tclZipfs.c
-index 1ec81b7..1b74e34 100644
+index 7530cc2..4693091 100644
 --- a/generic/tclZipfs.c
 +++ b/generic/tclZipfs.c
-@@ -4394,7 +4394,7 @@ TclZipfs_TclLibrary(void)
+@@ -4396,7 +4396,7 @@ TclZipfs_TclLibrary(void)
      if (ZipfsAppHookFindTclInit(dllName) == TCL_OK) {
  	return ScriptLibrarySetup(zipfs_literal_tcl_library);
      }
